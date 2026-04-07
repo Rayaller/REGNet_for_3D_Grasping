@@ -16,11 +16,16 @@
   - `pn2_ext` 与 `dgcnn_ext` 可在源码树内编译成功
   - `scripts/check_runtime.py` 运行通过
   - `validate_score` 已基于 `/tmp/regnet_tiny_dataset` 完成一次 smoke run
+- 阶段 5 已完成：
+  - `README.md` 已重写为服务器部署与复现实操手册
+- 阶段 6 已完成：
+  - 本地已创建 `v2` 分支
+  - 发布提交为 `ca5fb23` (`Prepare server-ready v2 release`)
+  - 远端 `origin/v2` 已推送成功
 - 仍未完全闭环的部分：
-  - README 还没有同步成这轮已验证过的真实命令
   - `test.py` 对不同样例的 `table_height` 仍需在文档里明确说明，否则默认值可能把候选抓取全部过滤掉
 - 当前最合适的下一步：
-  - 将已验证命令写回 README
+  - 如需要，可继续开 PR 或补一份更简短的 release note
   - 为发布版补齐“外部数据如何准备”的文档说明
 
 ## 目标
