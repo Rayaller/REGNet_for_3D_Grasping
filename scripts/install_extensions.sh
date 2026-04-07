@@ -37,7 +37,8 @@ print(f"[install_extensions] torch: {torch.__version__}")
 print(f"[install_extensions] torch cuda build: {torch.version.cuda}")
 PY
 
-python - <<'PY'
+python_build_probe() {
+  python - <<'PY'
 import importlib
 import sys
 
@@ -50,6 +51,17 @@ for module_name in ("pip", "setuptools", "wheel"):
     version = getattr(module, "__version__", "unknown")
     print(f"[install_extensions] {module_name}: {version}")
 PY
+}
+
+if ! python_build_probe; then
+  echo "[install_extensions] retrying build tool probe with SETUPTOOLS_USE_DISTUTILS=stdlib" >&2
+  if SETUPTOOLS_USE_DISTUTILS=stdlib python_build_probe; then
+    export SETUPTOOLS_USE_DISTUTILS=stdlib
+    echo "[install_extensions] enabled setuptools distutils compatibility mode"
+  else
+    exit 1
+  fi
+fi
 
 echo "[install_extensions] building pn2_ext"
 python -m pip install --force-reinstall --no-deps --no-build-isolation --disable-pip-version-check --verbose "${PN2_DIR}"

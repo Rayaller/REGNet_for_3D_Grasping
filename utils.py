@@ -486,8 +486,12 @@ def eval_notruth(pc, color, grasp_stage2, grasp_stage3, grasp_stage3_score, gras
     }
     print(grasp_save_path)
     if grasp_save_path:
+        save_dir = os.path.dirname(grasp_save_path)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
         with open(grasp_save_path, 'wb') as file:
             pickle.dump(output_dict, file)
+        print(f"saved prediction file: {grasp_save_path} ({os.path.getsize(grasp_save_path)} bytes)")
 
 def noise_color(pc_color):
     obj_color_time = 1-np.random.rand(3) / 5

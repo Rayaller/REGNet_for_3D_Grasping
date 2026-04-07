@@ -2,6 +2,12 @@
 
 ## 当前进展（2026-04-07）
 
+- 已完成一轮从远端 `origin/v2` fresh clone 开始的最终抽检：
+  - fresh clone 路径：`/tmp/regnet_v2_audit`
+  - 已按 README 实跑扩展编译、`scripts/check_runtime.py`、完整 `validate`、`test.py`
+  - fresh-clone 审计中又补掉了两个真实阻塞点：
+    - `scripts/install_extensions.sh` 现在会在 `setuptools` 命中特定 `_distutils_hack` 兼容问题时自动切换兼容模式继续编译
+    - `utils.py` 现在会在 `test.py` 写预测结果前自动创建 `_predict` 输出目录，并打印保存确认
 - 阶段 1 已有明显落地：
   - 发布边界已整理到 `release_scope.md`
   - `.gitignore` 已开始按源码 / 数据 / 产物边界调整
@@ -22,11 +28,11 @@
   - 本地已创建 `v2` 分支
   - 发布提交为 `ca5fb23` (`Prepare server-ready v2 release`)
   - 远端 `origin/v2` 已推送成功
-- 仍未完全闭环的部分：
-  - `test.py` 对不同样例的 `table_height` 仍需在文档里明确说明，否则默认值可能把候选抓取全部过滤掉
+- 当前发布态的剩余注意点：
+  - `test.py` 对不同样例的 `table_height` 仍需按 README 中的说明选择，否则默认值可能把候选抓取全部过滤掉
 - 当前最合适的下一步：
-  - 如需要，可继续开 PR 或补一份更简短的 release note
-  - 为发布版补齐“外部数据如何准备”的文档说明
+  - 如需要，可继续把这轮 fresh-clone 审计修复提交到 `v2`
+  - 或基于 `v2` 开 PR / 补一份更简短的 release note
 
 ## 目标
 

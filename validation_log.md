@@ -309,3 +309,141 @@ Result:
 - `validate_region` end-to-end on GPU: passed
 - Full `validate` end-to-end on GPU: passed after one refine-stage bug fix
 - `test.py` end-to-end on GPU: passed
+
+## 2026-04-07 Fresh-clone audit on `origin/v2`
+
+Goal:
+
+- Re-check the public `v2` branch from a fresh clone under `/tmp/regnet_v2_audit`
+- Follow the README flow with external tiny data and pretrained checkpoints
+
+### 1. Fresh clone
+
+Command:
+
+```bash
+git clone --depth 1 --branch v2 https://github.com/Rayaller/REGNet_for_3D_Grasping.git /tmp/regnet_v2_audit
+```
+
+Result:
+
+- Passed
+- Fresh clone HEAD matched `8012bc8`
+
+### 2. Extension install from README
+
+Command:
+
+```bash
+cd /tmp/regnet_v2_audit
+/home/ray/miniconda3/bin/conda run -n regnet bash scripts/install_extensions.sh
+```
+
+Initial result:
+
+- Failed on the build-tool probe before compilation
+- Root cause: `setuptools` import hit the `_distutils_hack` assertion in the
+  validated Conda Python 3.8 environment, even though `pip install` itself
+  could still work with `SETUPTOOLS_USE_DISTUTILS=stdlib`
+
+Fix applied:
+
+- `scripts/install_extensions.sh` now retries the build-tool probe with
+  `SETUPTOOLS_USE_DISTUTILS=stdlib` and exports that compatibility mode for
+  the subsequent extension build only when the initial probe fails
+
+Result after the fix:
+
+- Passed end-to-end from the fresh clone
+- `pn2_ext` and `dgcnn_ext` were both rebuilt successfully
+
+### 3. Runtime check from README
+
+Command:
+
+```bash
+cd /tmp/regnet_v2_audit
+/home/ray/miniconda3/bin/conda run -n regnet python scripts/check_runtime.py
+```
+
+Result:
+
+- Passed
+- `torch.cuda.is_available(): True`
+- `pn2_ext` import: passed
+- `dgcnn_ext` import: passed
+
+### 4. Full validate from the fresh clone
+
+Command:
+
+```bash
+cd /tmp/regnet_v2_audit
+/home/ray/miniconda3/bin/conda run --no-capture-output -n regnet python train.py \
+  --cuda \
+  --gpu 0 \
+  --gpu-num 1 \
+  --gpus 0 \
+  --mode validate \
+  --tag fresh_clone_validate_tiny \
+  --data-path /tmp/regnet_tiny_dataset \
+  --load-score-path /home/ray/work/regnet/REGNet_for_3D_Grasping/assets/models/regnet_train/score_119.model \
+  --load-region-path /home/ray/work/regnet/REGNet_for_3D_Grasping/assets/models/regnet_train/region_119.model
+```
+
+Result:
+
+- Passed end-to-end on GPU from the fresh clone
+- Final reported metrics included:
+  - `stage2 total_vgr: 0.5`
+  - `stage3_class_stage2 total_vgr: 0.5`
+
+### 5. `test.py` from the fresh clone
+
+Setup:
+
+- Copied `/home/ray/work/regnet/REGNet_for_3D_Grasping/test_file/virtual_data/00001_view_1.p`
+  to `/tmp/regnet_v2_virtual_data/00001_view_1.p`
+
+Command:
+
+```bash
+cd /tmp/regnet_v2_audit
+/home/ray/miniconda3/bin/conda run --no-capture-output -n regnet python test.py \
+  --gpu 0 \
+  --gpu-num 1 \
+  --gpus 0 \
+  --table-height 0.5 \
+  --folder-name /tmp/regnet_v2_virtual_data \
+  --file-name 00001_view_1.p \
+  --load-score-path /home/ray/work/regnet/REGNet_for_3D_Grasping/assets/models/regnet_train/score_119.model \
+  --load-region-path /home/ray/work/regnet/REGNet_for_3D_Grasping/assets/models/regnet_train/region_119.model
+```
+
+Initial result:
+
+- Inference ran, but saving failed with:
+  `FileNotFoundError: /tmp/regnet_v2_virtual_data_predict/00001_view_1.p`
+- Root cause: `utils.eval_notruth()` assumed the `_predict` output directory
+  already existed
+
+Fix applied:
+
+- `utils.eval_notruth()` now creates the parent directory before writing the
+  prediction artifact
+- It now also prints a save confirmation with the final file size
+
+Result after the fix:
+
+- Passed end-to-end from the fresh clone
+- Prediction file written to:
+  `/tmp/regnet_v2_virtual_data_predict/00001_view_1.p`
+- Saved file size reported by the run: `1186005 bytes`
+
+### Fresh-clone audit status
+
+- Fresh clone of `origin/v2`: passed
+- README extension installation path: passed after compatibility fix
+- README runtime check: passed
+- README full validate path: passed
+- README single-file inference path: passed after output-directory fix
