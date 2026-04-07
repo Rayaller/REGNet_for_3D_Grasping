@@ -1,12 +1,12 @@
 import open3d
 import numpy as np
 import copy
-from configs import config
 
 create_box = open3d.geometry.TriangleMesh.create_box
 #create_box = open3d.geometry.create_mesh_box
 
 HALF_BOTTOM_WIDTH = 0.06/2 + 0.01
+HALF_BOTTOM_SPACE = 0.06/2
 FINGER_LENGTH = 0.06
 FINGER_WIDTH = 0.01
 HALF_HAND_THICKNESS = 0.005

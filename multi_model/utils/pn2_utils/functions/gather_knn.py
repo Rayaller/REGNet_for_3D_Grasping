@@ -1,9 +1,14 @@
 import torch
 try:
-    import dgcnn_ext
-    #from .functions.dgcnn_ext import dgcnn_ext
+    import dgcnn_ext  # type: ignore
 except ImportError:
-    print("Please compile source files before using functions CUDA extension.")
+    try:
+        from . import dgcnn_ext  # type: ignore
+        print("Import DGCNN extension successfully from package directory")
+    except ImportError as exc:
+        raise ImportError(
+            "Please compile source files before using functions CUDA extension."
+        ) from exc
 
 
 class GatherKNN(torch.autograd.Function):

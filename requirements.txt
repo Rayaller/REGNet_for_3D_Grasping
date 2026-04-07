@@ -1,7 +1,12 @@
-python=3.6
-pytorch=1.8.0
-torchvision=0.3.0
-open3d=0.8
-tqdm
-tensorflow
-tensorboardX=2.1
+# Core runtime dependencies for training and evaluation.
+# Tested locally with:
+# - Python 3.8.20
+# - PyTorch 2.1.2 + CUDA 12.1
+# - Open3D 0.18.0
+
+numpy>=1.24,<2
+open3d>=0.18,<0.19
+tensorboardX>=2.6,<3
+tqdm>=4.66,<5
+transforms3d>=0.4,<0.5
+

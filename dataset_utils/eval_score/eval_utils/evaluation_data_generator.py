@@ -45,7 +45,7 @@ def transformation_quat(point):
 
 class EvalDataTest(PointCloud):
     def __init__(self, points, grasp, view_num, table_height,
-                 depth: float, width: float, gpu: int, visualization=False):
+                 depth: float, width: float, gpu: int, visualization=False, debug_label: str=''):
         '''
           points: [N, 3]
           grasp : [B, 8]
@@ -60,6 +60,7 @@ class EvalDataTest(PointCloud):
         cloud.points = open3d.utility.Vector3dVector(points)
         PointCloud.__init__(self, cloud, visualization)
         self.table_height = table_height
+        self.debug_label = debug_label if debug_label else 'eval_test'
         
         if view_num is None:
             center_camera = np.array([0, 0, 1.658])
@@ -96,12 +97,33 @@ class EvalDataTest(PointCloud):
         # self.baseline_frame = torch.zeros(self.frame.shape[0], 4, 4, dtype=torch.float32, device=self.device)
         self.baseline_frame_index = torch.zeros(self.frame.shape[0], dtype=torch.float32, device=self.device)
         self.valid_grasp = 0
+        self.debug_stats = {
+            'total_candidates': int(self.frame.shape[0]),
+            'kept': 0,
+            'table_height_reject': 0,
+            'table_collision_reject': 0,
+            'too_few_points_reject': 0,
+            'back_collision_reject': 0,
+            'finger_collision_reject': 0,
+        }
 
     def run_collision_view(self):
         #print('\n Start test view collision checking \n')
         for frame_index in range(self.frame.shape[0]):
             self.finger_hand_view(frame_index)
         #print('\n Finish view collision checking \n')
+        print(
+            "[{}] collision summary: total={} kept={} table_height={} table_collision={} too_few_points={} back_collision={} finger_collision={}".format(
+                self.debug_label,
+                self.debug_stats['total_candidates'],
+                self.debug_stats['kept'],
+                self.debug_stats['table_height_reject'],
+                self.debug_stats['table_collision_reject'],
+                self.debug_stats['too_few_points_reject'],
+                self.debug_stats['back_collision_reject'],
+                self.debug_stats['finger_collision_reject'],
+            )
+        )
         return self.grasp_no_collision_view[self.baseline_frame_index[:self.valid_grasp].long()]     
 
     def inv_transform_predicted_grasp(self, grasp_trans):
@@ -184,9 +206,13 @@ class EvalDataTest(PointCloud):
         point = self.center[frame_index, :]
         
         if point[2] + frame[2, 0] * self.depth < self.table_height + 0.005: # config.FINGER_LENGTH  self.depth 
+            self.debug_stats['table_height_reject'] += 1
             return
 
         table_collision_bool = self._table_collision_check(point, frame)
+        if bool(table_collision_bool.item()):
+            self.debug_stats['table_collision_reject'] += 1
+            return
 
         T_global_to_local = self.global_to_local[frame_index, :, :]
         local_cloud = torch.matmul(T_global_to_local, self.cloud_array_homo)
@@ -194,6 +220,7 @@ class EvalDataTest(PointCloud):
 
         close_plane_bool = (local_cloud[0, :] > - config.BOTTOM_LENGTH) & (local_cloud[0, :] < self.depth) # config.FINGER_LENGTH
         if torch.sum(close_plane_bool) < config.NUM_POINTS_THRESHOLD:
+            self.debug_stats['too_few_points_reject'] += 1
             return
         local_search_close_plane_points = local_cloud[:, close_plane_bool][0:3, :]  # only filter along x axis
         #T_local_to_local_search = torch.tensor([[1., 0., 0., 0.], [0., 1., 0., 0.], 
@@ -211,6 +238,7 @@ class EvalDataTest(PointCloud):
                                 z_collision_bool
 
         if torch.sum(back_collision_bool) > config.BACK_COLLISION_THRESHOLD:
+            self.debug_stats['back_collision_reject'] += 1
             return
 
         y_finger_region_bool_left = (local_search_close_plane_points[1, :] < hand_half_bottom_width) & \
@@ -221,11 +249,13 @@ class EvalDataTest(PointCloud):
         y_finger_region_bool = y_finger_region_bool_left | y_finger_region_bool_right
         collision_region_bool = (z_collision_bool & y_finger_region_bool)
         if torch.sum(collision_region_bool) > config.FINGER_COLLISION_THRESHOLD:
+            self.debug_stats['finger_collision_reject'] += 1
             return
             
         # self.baseline_frame[self.valid_grasp] = self.global_to_local[frame_index]
         self.baseline_frame_index[self.valid_grasp] = frame_index
         self.valid_grasp += 1
+        self.debug_stats['kept'] += 1
 
 
 class EvalDataValidate(PointCloud):

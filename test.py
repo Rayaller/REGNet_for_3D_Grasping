@@ -1,6 +1,7 @@
 import argparse
 import os
 import pickle, copy
+import re
 
 import torch
 import torch.utils.data
@@ -18,10 +19,21 @@ from dataset_utils.eval_score.eval import eval_test, eval_validate
 import utils
 import glob
 
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+ASSETS_ROOT = os.path.join(PROJECT_ROOT, 'assets')
+MODELS_ROOT = os.path.join(ASSETS_ROOT, 'models')
+LOGS_ROOT = os.path.join(ASSETS_ROOT, 'log')
+EVAL_DATA_ROOT = os.path.join(PROJECT_ROOT, 'eval_data')
+TEST_VIRTUAL_ROOT = os.path.join(PROJECT_ROOT, 'test_file', 'virtual_data')
+TEST_REAL_ROOT = os.path.join(PROJECT_ROOT, 'test_file', 'real_data')
+FINAL_MODELS_ROOT = os.path.join(MODELS_ROOT, 'final')
+REGNET_TRAIN_MODELS_ROOT = os.path.join(MODELS_ROOT, 'regnet_train')
+
 parser = argparse.ArgumentParser(description='GripperRegionNetwork')
 parser.add_argument('--tag', type=str, default='default')
 parser.add_argument('--debug', type=bool, default=False)
 parser.add_argument('--epoch', type=int, default=101)
+parser.add_argument('--seed', type=int, default=None)
                                         
 parser.add_argument('--cuda', action='store_true')
 parser.add_argument('--gpu-num', type=int, default=2)
@@ -29,9 +41,10 @@ parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--gpus', type=str, default='0,2,3')
 parser.add_argument('--lr-score' , type=float, default=0.001)
 parser.add_argument('--lr-region', type=float, default=0.001)
+parser.add_argument('--table-height', type=float, default=0.75)
 
-parser.add_argument('--load-score-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/models/final/score_21.model')
-parser.add_argument('--load-region-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/models/final/region_21.model')
+parser.add_argument('--load-score-path', type=str, default='')
+parser.add_argument('--load-region-path', type=str, default='')
 # parser.add_argument('--load-score-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/models/0.12/score_38.model')
 # parser.add_argument('--load-region-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/models/0.12/region_38.model')
 # #parser.add_argument('--load-score-path', type=str, default='')
@@ -39,11 +52,11 @@ parser.add_argument('--load-region-path', type=str, default='/data1/cxg6/REGNet_
 parser.add_argument('--load-score-flag', type=bool, default=True)
 parser.add_argument('--load-region-flag', type=bool, default=True)
 
-parser.add_argument('--data-path', type=str, default='/data1/cxg6/eval_data', help='data path')
+parser.add_argument('--data-path', type=str, default=EVAL_DATA_ROOT, help='data path')
 
-parser.add_argument('--model-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/models/', help='to saved model path')
-parser.add_argument('--log-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/log/', help='to saved log path')
-parser.add_argument('--folder-name', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/test_file/virtual_data')
+parser.add_argument('--model-path', type=str, default=MODELS_ROOT, help='to saved model path')
+parser.add_argument('--log-path', type=str, default=LOGS_ROOT, help='to saved log path')
+parser.add_argument('--folder-name', type=str, default=TEST_VIRTUAL_ROOT)
 parser.add_argument('--file-name', type=str, default='')
 parser.add_argument('--log-interval', type=int, default=1)
 parser.add_argument('--save-interval', type=int, default=1)
@@ -51,19 +64,98 @@ parser.add_argument('--save-interval', type=int, default=1)
 
 args = parser.parse_args()
 
-args.cuda = args.cuda if torch.cuda.is_available else False
+def extract_model_epoch(model_path, prefix):
+    match = re.match(r'{}_(\d+)\.model$'.format(prefix), os.path.basename(model_path))
+    if match is None:
+        raise ValueError("Invalid {} model path: {}".format(prefix, model_path))
+    return int(match.group(1))
 
-np.random.seed(int(time.time()))
+def find_latest_model_pair(model_dir):
+    if not os.path.isdir(model_dir):
+        return None, None
+
+    score_epochs, region_epochs = set(), set()
+    for entry in os.listdir(model_dir):
+        score_match = re.match(r'score_(\d+)\.model$', entry)
+        region_match = re.match(r'region_(\d+)\.model$', entry)
+        if score_match is not None:
+            score_epochs.add(int(score_match.group(1)))
+        if region_match is not None:
+            region_epochs.add(int(region_match.group(1)))
+
+    shared_epochs = sorted(score_epochs & region_epochs)
+    if not shared_epochs:
+        return None, None
+
+    latest_epoch = shared_epochs[-1]
+    return (
+        os.path.join(model_dir, 'score_{}.model'.format(latest_epoch)),
+        os.path.join(model_dir, 'region_{}.model'.format(latest_epoch)),
+    )
+
+def resolve_model_paths(score_path, region_path):
+    score_path = os.path.abspath(score_path) if score_path else ''
+    region_path = os.path.abspath(region_path) if region_path else ''
+
+    if score_path and not os.path.exists(score_path):
+        raise FileNotFoundError("Score model not found: {}".format(score_path))
+    if region_path and not os.path.exists(region_path):
+        raise FileNotFoundError("Region model not found: {}".format(region_path))
+
+    if score_path and region_path:
+        return score_path, region_path
+
+    if score_path:
+        region_epoch = extract_model_epoch(score_path, 'score')
+        region_path = os.path.join(os.path.dirname(score_path), 'region_{}.model'.format(region_epoch))
+        if not os.path.exists(region_path):
+            raise FileNotFoundError("Region model not found for epoch {}: {}".format(region_epoch, region_path))
+        return score_path, region_path
+
+    if region_path:
+        score_epoch = extract_model_epoch(region_path, 'region')
+        score_path = os.path.join(os.path.dirname(region_path), 'score_{}.model'.format(score_epoch))
+        if not os.path.exists(score_path):
+            raise FileNotFoundError("Score model not found for epoch {}: {}".format(score_epoch, score_path))
+        return score_path, region_path
+
+    for model_dir in (FINAL_MODELS_ROOT, REGNET_TRAIN_MODELS_ROOT):
+        score_candidate, region_candidate = find_latest_model_pair(model_dir)
+        if score_candidate and region_candidate:
+            print("Use model pair:", score_candidate, region_candidate)
+            return score_candidate, region_candidate
+
+    raise FileNotFoundError(
+        "No available score/region model pair found in {} or {}. "
+        "Please pass --load-score-path and --load-region-path explicitly.".format(
+            FINAL_MODELS_ROOT, REGNET_TRAIN_MODELS_ROOT
+        )
+    )
+
+args.load_score_path, args.load_region_path = resolve_model_paths(args.load_score_path, args.load_region_path)
+
+if args.gpu == -1:
+    args.cuda = False
+elif torch.cuda.is_available():
+    args.cuda = True
+else:
+    raise RuntimeError(
+        "CUDA is unavailable in the current environment. "
+        "Please run test.py on a GPU-enabled environment."
+    )
+
+seed = int(time.time()) if args.seed is None else args.seed
+np.random.seed(seed)
 if args.cuda:
-    torch.cuda.manual_seed(1)
-torch.cuda.set_device(args.gpu)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.set_device(args.gpu)
 
 all_points_num = 25600
 obj_class_num = 43
 
 # width, height, depth = 0.060, 0.010, 0.060
 width, height, depth = 0.08, 0.010, 0.06
-table_height = 0.75
+table_height = args.table_height
 grasp_score_threshold = 0.5 # 0.3
 center_num = 4000#64#128
 score_thre = 0.5
@@ -84,6 +176,8 @@ score_model, region_model, resume_epoch = utils.construct_net(model_params, 'tes
                                 load_score_flag=args.load_score_flag, score_path=args.load_score_path,
                                 load_rnet_flag=args.load_region_flag, rnet_path=args.load_region_path)
 score_model, region_model = utils.map_model(score_model, region_model, args.gpu_num, args.gpu, args.gpus)
+print("Test config: table_height={}".format(table_height))
+print("Test config: seed={}".format(seed))
 
 class RefineModule():
     def __init__(self):
@@ -127,7 +221,7 @@ class RefineModule():
         pc = pc[select_point_index]
 
         pc_torch = torch.Tensor(pc).view(1, -1, 6)
-        if args.gpu != -1:
+        if args.cuda:
             pc_torch = pc_torch.cuda()
         
         # all_feature: [B, N, C], output_score: [B, N]

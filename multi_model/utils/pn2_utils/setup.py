@@ -1,5 +1,13 @@
+import os
+
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+
+DEFAULT_TORCH_CUDA_ARCH_LIST = "6.0;6.1;7.0;7.5;8.0;8.6+PTX"
+
+if not os.environ.get("TORCH_CUDA_ARCH_LIST"):
+    os.environ["TORCH_CUDA_ARCH_LIST"] = DEFAULT_TORCH_CUDA_ARCH_LIST
+    print(f"[pn2_ext setup] TORCH_CUDA_ARCH_LIST={DEFAULT_TORCH_CUDA_ARCH_LIST}")
 
 extra_compile_args = {'cxx': ['-g'],
                       'nvcc': ['-O2']}

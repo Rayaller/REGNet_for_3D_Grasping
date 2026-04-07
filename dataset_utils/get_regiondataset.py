@@ -364,15 +364,16 @@ def _select_score_center(pc, pre_score, center_num, score_thre):
         center_pc_index :[B, center_num] index of selected center in sampled points
     '''
     B,A,C = pc.shape
+    device = pc.device
     pre_score = pre_score.cpu()
     if B == 1:
         positive_pc_mask = (pre_score.view(-1) > score_thre)
         positive_pc_mask = (pre_score.view(-1) > score_thre)
         positive_pc_mask = positive_pc_mask.cpu().numpy()
-        map_index = torch.Tensor(np.nonzero(positive_pc_mask)[0]).view(-1).long()
+        map_index = torch.from_numpy(np.nonzero(positive_pc_mask)[0]).view(-1).long().to(device)
 
-        center_pc = torch.full((center_num, C), -1.0)
-        center_pc_index = torch.full((center_num,), -1)
+        center_pc = torch.full((center_num, C), -1.0, device=device)
+        center_pc_index = torch.full((center_num,), -1, device=device)
 
         pc = pc.view(-1,C)
         cur_pc = pc[map_index,:]
@@ -383,27 +384,26 @@ def _select_score_center(pc, pre_score, center_num, score_thre):
             center_pc = pc[center_pc_index.long()]
             
         elif len(cur_pc) > 0:
-            center_pc_index[:len(cur_pc)] = torch.arange(0, len(cur_pc))
-            center_pc_index[len(cur_pc):] = torch.Tensor(np.random.choice(cur_pc.shape[0], center_num-len(cur_pc), replace=True))
+            center_pc_index[:len(cur_pc)] = torch.arange(0, len(cur_pc), device=device)
+            center_pc_index[len(cur_pc):] = torch.from_numpy(
+                np.random.choice(cur_pc.shape[0], center_num-len(cur_pc), replace=True)
+            ).to(device)
             center_pc_index = map_index[center_pc_index.long()]
             center_pc = pc[center_pc_index.long()]
             
         else:
-            center_pc_index = torch.Tensor(np.random.choice(pc.shape[0], center_num, replace=False))
+            center_pc_index = torch.from_numpy(np.random.choice(pc.shape[0], center_num, replace=False)).to(device)
             center_pc = pc[center_pc_index.long()]
     
         center_pc = center_pc.view(1,-1,C)
         center_pc_index = center_pc_index.view(1,-1)
-        if pc.is_cuda:
-            center_pc = center_pc.cuda()
-            center_pc_index = center_pc_index.cuda()
         return center_pc, center_pc_index
 
     # ---------------------- for train -------------------
     positive_pc_mask = (pre_score > score_thre)
 
-    center_pc = torch.full((B, center_num, C), -1.0)
-    center_pc_index = torch.full((B, center_num), -1)
+    center_pc = torch.full((B, center_num, C), -1.0, device=device)
+    center_pc_index = torch.full((B, center_num), -1, device=device)
     for i in range(B):
         cur_pc = pc[i,positive_pc_mask[i],:]
         if len(cur_pc) > center_num:
@@ -411,21 +411,23 @@ def _select_score_center(pc, pre_score, center_num, score_thre):
             #center_pc_index[i] = _farthest_point_sample(cur_pc, center_num)
             center_pc_index[i] = _F.farthest_point_sample(cur_pc[:,:3].view(1,-1,3).transpose(2,1), center_num).view(-1)
 
-            map_index = torch.nonzero(positive_pc_mask[i]).view(-1)
+            map_index = torch.nonzero(positive_pc_mask[i]).view(-1).to(device)
             center_pc_index[i] = map_index[center_pc_index[i].long()]
             center_pc[i] = pc[i, center_pc_index[i].long()]
             
         elif len(cur_pc) > 0:
-            center_pc_index[i,:len(cur_pc)] = torch.arange(0, len(cur_pc))
-            center_pc_index[i,len(cur_pc):] = torch.Tensor(np.random.choice(cur_pc.shape[0], center_num-len(cur_pc), replace=True))
+            center_pc_index[i,:len(cur_pc)] = torch.arange(0, len(cur_pc), device=device)
+            center_pc_index[i,len(cur_pc):] = torch.from_numpy(
+                np.random.choice(cur_pc.shape[0], center_num-len(cur_pc), replace=True)
+            ).to(device)
             #center_pc[i] = cur_pc[center_pc_index[i].long()]
 
-            map_index = torch.nonzero(positive_pc_mask[i]).view(-1)
+            map_index = torch.nonzero(positive_pc_mask[i]).view(-1).to(device)
             center_pc_index[i] = map_index[center_pc_index[i].long()]
             center_pc[i] = pc[i, center_pc_index[i].long()]
             
         else:
-            center_pc_index[i] = torch.Tensor(np.random.choice(pc.shape[1], center_num, replace=False))
+            center_pc_index[i] = torch.from_numpy(np.random.choice(pc.shape[1], center_num, replace=False)).to(device)
             center_pc[i] = pc[i, center_pc_index[i].long()]
     
     if pc.is_cuda:

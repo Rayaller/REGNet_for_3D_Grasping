@@ -6,24 +6,23 @@ __pycache__/
 # C extensions
 *.so
 
-assets
 .vscode
-assets/log
-# assets/log/*0*
-# assets/log/*15*
-# assets/log/*xyz
-# assets/log/*refine
-# assets/log/test
-# assets/log/vsdebug
-# assets/log/final
 
-assets/models/*0*
-assets/models/*15*
-assets/models/*xyz
-assets/models/*refine
-assets/models/test
-assets/models/vsdebug
-assets/models/train_direct
+# Repository release boundaries
+REGNet_for_3D_Grasping_v1/
+dataset/
+eval_data/
+test_file/
+vis/output/
+
+# Generated training artifacts
+assets/log/**
+assets/models/**
+!assets/.gitkeep
+!assets/log/
+!assets/log/.gitkeep
+!assets/models/
+!assets/models/.gitkeep
 
 # Distribution / packaging
 .Python

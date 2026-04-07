@@ -1,3 +1,4 @@
+import json
 import os
 import numpy as np
 import time
@@ -45,6 +46,9 @@ def get_dataloader(dataset, batchsize, shuffle=True, num_workers=8, pin_memory=T
         batch = list(filter(lambda x:x[0] is not None, batch))
         return torch.utils.data.dataloader.default_collate(batch)
 
+    if num_workers > 0 and not torch.cuda.is_available():
+        num_workers = 0
+
     dataloader = torch.utils.data.DataLoader(
                     dataset,
                     batch_size=batchsize,
@@ -60,8 +64,9 @@ def construct_scorenet(load_flag, obj_class_num=2, model_path=None, gpu_num=0):
     score_model = ScoreNetwork(training=True, k_obj=obj_class_num)
 
     resume_num = 0
-    if load_flag and model_path is not '':
-        model_dict = torch.load(model_path, map_location='cuda:{}'.format(gpu_num)).state_dict() #, map_location='cpu'
+    if load_flag and model_path != '':
+        map_location = 'cuda:{}'.format(gpu_num) if gpu_num != -1 and torch.cuda.is_available() else 'cpu'
+        model_dict = torch.load(model_path, map_location=map_location).state_dict() #, map_location='cpu'
         new_model_dict = {}
         for key in model_dict.keys():
             new_model_dict[key.replace("module.", "")] = model_dict[key]
@@ -77,9 +82,10 @@ def construct_rnet(load_flag, training_refine, group_num,
     
     resume_num = 0
 
-    if load_flag and model_path is not '':
+    if load_flag and model_path != '':
         cur_dict = region_model.state_dict()                                        
-        model_dict = torch.load(model_path, map_location='cuda:{}'.format(gpu_num)).state_dict()
+        map_location = 'cuda:{}'.format(gpu_num) if gpu_num != -1 and torch.cuda.is_available() else 'cpu'
+        model_dict = torch.load(model_path, map_location=map_location).state_dict()
         new_model_dict = {}
         for key in model_dict.keys():
             new_model_dict[key.replace("module.", "")] = model_dict[key]
@@ -121,6 +127,10 @@ def construct_scheduler(model, lr, resume_num=0):
     return optimizer, scheduler
 
 def map_model(score_model, region_model, gpu_num:int, gpu_id:int, gpu_ids:str):
+    if gpu_id == -1 or not torch.cuda.is_available():
+        print("Construct network successfully on CPU!")
+        return score_model, region_model
+
     device = torch.device("cuda:"+str(gpu_id))
     score_model = score_model.to(device)
     if region_model is not None:
@@ -134,32 +144,79 @@ def map_model(score_model, region_model, gpu_num:int, gpu_id:int, gpu_ids:str):
     print("Construct network successfully!")
     return score_model, region_model
 
-def add_log_epoch(logger, data, epoch, mode="train", method="refine"):
-    if method == "score":
-        logger.add_scalar('epoch_'+mode+'_stage1_loss_score', data[0], epoch) # scorenet regression loss
-    elif method == "region":
-        logger.add_scalar('epoch_'+mode+'_stage2_pre_loss_center', data[0], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage2_pre_loss_cos_orientation', data[1], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage2_pre_loss_theta', data[2], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage2_pre_loss_score', data[3], epoch)        
-    elif method == "refine":
-        logger.add_scalar('epoch_'+mode+'_stage2_pre_loss_center', data[0], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage2_pre_loss_cos_orientation', data[1], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage2_pre_loss_theta', data[2], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage2_pre_loss_score', data[3], epoch)   
+def _to_serializable_scalar(value):
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return float(value.item())
+        return float(value.detach().float().mean().item())
+    if isinstance(value, np.generic):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return value
 
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_center_stage2', data[4], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_cos_orientation_stage2', data[5], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_theta_stage2', data[6], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_score_stage2', data[7], epoch)    
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_center', data[8], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_cos_orientation', data[9], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_theta', data[10], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_score', data[11], epoch)    
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_center_score', data[12], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_cos_orientation_score', data[13], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_theta_score', data[14], epoch) 
-        logger.add_scalar('epoch_'+mode+'_stage3_pre_loss_score_score', data[15], epoch)    
+def _log_epoch_scalar(logger, metrics, name, value, epoch):
+    scalar = _to_serializable_scalar(value)
+    logger.add_scalar(name, scalar, epoch)
+    metrics[name] = scalar
+
+def save_epoch_metrics_json(output_path, epoch, mode, method, metrics):
+    entry = {
+        'epoch': int(epoch),
+        'mode': mode,
+        'method': method,
+        'metrics': metrics,
+    }
+
+    payload = {'entries': []}
+    if os.path.exists(output_path):
+        with open(output_path, 'r') as handle:
+            payload = json.load(handle)
+
+    entries = payload.get('entries', [])
+    replaced = False
+    for index, current in enumerate(entries):
+        if current.get('epoch') == int(epoch) and current.get('mode') == mode and current.get('method') == method:
+            entries[index] = entry
+            replaced = True
+            break
+    if not replaced:
+        entries.append(entry)
+
+    entries.sort(key=lambda item: (item.get('epoch', -1), item.get('mode', ''), item.get('method', '')))
+    payload['entries'] = entries
+
+    with open(output_path, 'w') as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+
+def add_log_epoch(logger, data, epoch, mode="train", method="refine"):
+    metrics = {}
+    if method == "score":
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage1_loss_score', data[0], epoch)
+    elif method == "region":
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage2_pre_loss_center', data[0], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage2_pre_loss_cos_orientation', data[1], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage2_pre_loss_theta', data[2], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage2_pre_loss_score', data[3], epoch)
+    elif method == "refine":
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage2_pre_loss_center', data[0], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage2_pre_loss_cos_orientation', data[1], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage2_pre_loss_theta', data[2], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage2_pre_loss_score', data[3], epoch)
+
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_center_stage2', data[4], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_cos_orientation_stage2', data[5], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_theta_stage2', data[6], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_score_stage2', data[7], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_center', data[8], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_cos_orientation', data[9], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_theta', data[10], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_score', data[11], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_center_score', data[12], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_cos_orientation_score', data[13], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_theta_score', data[14], epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_stage3_pre_loss_score_score', data[15], epoch)
+    return metrics
 
 def add_log_batch(logger, data, index, mode="train", method="refine"):
     def add_log_stage1(logger, loss, index, mode):
@@ -372,10 +429,14 @@ def eval_and_log(logger, data_path, keep_grasp_num, mask, grasp, record_data, pa
     return record_data
 
 def add_eval_log_epoch(logger, data, batch_nums, epoch, mode, stages):
+    metrics = {}
     for i in range(len(data)):
         data_i  = data[i]
         stage_i = stages[i]
         #### data_i :(nocoll_scene_num, total_score, nocoll_view_num, formal_num)
+        if data_i[2] == 0 or data_i[3] == 0:
+            print("{} skipped: empty evaluation record {}".format(stage_i, data_i))
+            continue
         total_vgr_before    = data_i[0] / data_i[3]
         total_score         = data_i[1] / data_i[2]
         total_vgr           = data_i[0] / data_i[2]
@@ -383,22 +444,27 @@ def add_eval_log_epoch(logger, data, batch_nums, epoch, mode, stages):
         print("{} total_vgr: \t{}".format(stage_i, total_vgr) )
         print("{} total_score: \t{}".format(stage_i, total_score) )
 
-        logger.add_scalar('epoch_'+mode+'_'+stage_i+'_vgr_before', total_vgr_before, epoch) 
-        logger.add_scalar('epoch_'+mode+'_'+stage_i+'_vgr', total_vgr, epoch) 
-        logger.add_scalar('epoch_'+mode+'_'+stage_i+'_score', total_score, epoch) 
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_'+stage_i+'_vgr_before', total_vgr_before, epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_'+stage_i+'_vgr', total_vgr, epoch)
+        _log_epoch_scalar(logger, metrics, 'epoch_'+mode+'_'+stage_i+'_score', total_score, epoch)
+    return metrics
 
 ####___________________________test function_____________________________
 def eval_notruth(pc, color, grasp_stage2, grasp_stage3, grasp_stage3_score, grasp_stage3_stage2, output_score, params, grasp_save_path=None):
     depths, width, table_height, gpu, _ = params
     view_num = None
+    print("raw stage2 grasp candidates:", len(grasp_stage2))
+    print("raw stage3 grasp candidates (stage2 class path):", len(grasp_stage3_stage2))
+    print("raw stage3 grasp candidates:", len(grasp_stage3))
+    print("raw stage3 grasp candidates (score>thre):", len(grasp_stage3_score))
     if len(grasp_stage2) >= 1:
-        grasp_stage2 = eval_test(pc, grasp_stage2[:,:8], view_num, table_height, depths, width, gpu)
+        grasp_stage2 = eval_test(pc, grasp_stage2[:,:8], view_num, table_height, depths, width, gpu, debug_label='stage2')
     if len(grasp_stage3_stage2) >= 1:
-        grasp_stage3_stage2 = eval_test(pc, grasp_stage3_stage2[:,:8], view_num, table_height, depths, width, gpu)
+        grasp_stage3_stage2 = eval_test(pc, grasp_stage3_stage2[:,:8], view_num, table_height, depths, width, gpu, debug_label='stage3_stage2')
     if len(grasp_stage3) >= 1:
-        grasp_stage3 = eval_test(pc, grasp_stage3[:,:8], view_num, table_height, depths, width, gpu)
+        grasp_stage3 = eval_test(pc, grasp_stage3[:,:8], view_num, table_height, depths, width, gpu, debug_label='stage3')
     if len(grasp_stage3_score) >= 1:
-        grasp_stage3_score = eval_test(pc, grasp_stage3_score[:,:8], view_num, table_height, depths, width, gpu)
+        grasp_stage3_score = eval_test(pc, grasp_stage3_score[:,:8], view_num, table_height, depths, width, gpu, debug_label='stage3_score')
 
     if gpu != -1:
         output_score        = output_score.view(-1,1).cpu()
@@ -407,7 +473,7 @@ def eval_notruth(pc, color, grasp_stage2, grasp_stage3, grasp_stage3_score, gras
         grasp_stage3        = grasp_stage3.cpu()
         grasp_stage3_score  = grasp_stage3_score.cpu()
     print("stage2 grasp num:", len(grasp_stage2))
-    print("stage3 grasp num:", len(grasp_stage2))
+    print("stage3 grasp num:", len(grasp_stage3))
     print("stage3 grasp num (with scorethre):", len(grasp_stage3_score))
     output_dict = {
         'points'             : pc,

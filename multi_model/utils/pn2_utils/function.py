@@ -1,12 +1,15 @@
 import torch
-import pn2_ext
-'''
+
 try:
-    from . import pn2_ext
-    print("Import PointNet2 extension successfully")
+    import pn2_ext  # type: ignore
 except ImportError:
-    print('Please compile source files before using pointnet2 cuda extension.')
-'''
+    try:
+        from . import pn2_ext  # type: ignore
+        print("Import PointNet2 extension successfully from package directory")
+    except ImportError as exc:
+        raise ImportError(
+            "Please compile source files before using pointnet2 cuda extension."
+        ) from exc
 
 def gather_points(points, index):
     """Gather xyz of centroids according to indices

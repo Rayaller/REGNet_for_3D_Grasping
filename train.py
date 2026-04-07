@@ -18,6 +18,13 @@ from dataset_utils.eval_score.eval import eval_test, eval_validate
 import utils
 import glob
 
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+ASSETS_ROOT = os.path.join(PROJECT_ROOT, 'assets')
+MODELS_ROOT = os.path.join(ASSETS_ROOT, 'models')
+LOGS_ROOT = os.path.join(ASSETS_ROOT, 'log')
+DATASET_ROOT = os.path.join(PROJECT_ROOT, 'dataset', '0.08')
+TEST_REAL_ROOT = os.path.join(PROJECT_ROOT, 'test_file', 'real_data')
+
 parser = argparse.ArgumentParser(description='GripperRegionNetwork')
 parser.add_argument('--tag', type=str, default='default')
 parser.add_argument('--debug', type=bool, default=False)
@@ -42,11 +49,11 @@ parser.add_argument('--load-score-flag', type=bool, default=True)
 parser.add_argument('--load-region-flag', type=bool, default=True)
 
 parser.add_argument('--use-multi', type=bool, default=False)
-parser.add_argument('--data-path', type=str, default='/data1/cxg6/dataset/0.08', help='data path')
+parser.add_argument('--data-path', type=str, default=DATASET_ROOT, help='data path')
 
-parser.add_argument('--model-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/models/', help='to saved model path')
-parser.add_argument('--log-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/log/', help='to saved log path')
-parser.add_argument('--folder-name', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/test_file/real_data')
+parser.add_argument('--model-path', type=str, default=MODELS_ROOT, help='to saved model path')
+parser.add_argument('--log-path', type=str, default=LOGS_ROOT, help='to saved log path')
+parser.add_argument('--folder-name', type=str, default=TEST_REAL_ROOT)
 parser.add_argument('--file-name', type=str, default='')
 parser.add_argument('--log-interval', type=int, default=1)
 parser.add_argument('--save-interval', type=int, default=1)
@@ -54,12 +61,37 @@ parser.add_argument('--save-interval', type=int, default=1)
 
 args = parser.parse_args()
 
-args.cuda = args.cuda if torch.cuda.is_available else False
+CUDA_REQUIRED_MODES = {
+    'train',
+    'pretrain_score',
+    'pretrain_region',
+    'validate',
+    'validate_score',
+    'validate_region',
+    'test',
+    'test_score',
+    'test_region',
+}
+
+if args.mode in CUDA_REQUIRED_MODES:
+    if not args.cuda:
+        raise RuntimeError(
+            "Mode '{}' requires CUDA. Please rerun with --cuda in a GPU-enabled environment.".format(args.mode)
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "Mode '{}' requires CUDA, but torch.cuda.is_available() is False. "
+            "The PointNet++ / DGCNN extensions in this project operate on CUDA tensors.".format(args.mode)
+        )
+
+args.cuda = args.cuda if torch.cuda.is_available() else False
 
 np.random.seed(int(time.time()))
 if args.cuda:
     torch.cuda.manual_seed(1)
-torch.cuda.set_device(args.gpu)
+    torch.cuda.set_device(args.gpu)
+else:
+    args.gpu = -1
 
 if args.mode == 'test' or args.mode == 'validate':
     args.tag = args.load_score_path.split('/')[-2]
@@ -116,6 +148,7 @@ class ScoreModule():
         self.test_data_loader  = test_data_loader
         
         self.saved_base_path = os.path.join(args.model_path, args.tag)
+        self.json_metrics_path = os.path.join(args.log_path, args.tag, 'epoch_metrics.json')
 
     def train_val(self, epoch, mode='train'):
         if mode == 'train':
@@ -135,7 +168,9 @@ class ScoreModule():
             batch_size = 1
 
         total_all_loss = 0
+        batch_count = 0
         for batch_idx, (pc, pc_score, pc_label, data_path, data_width) in enumerate(dataloader):
+            batch_count += 1
             if mode == 'train':
                 optimizer_score.zero_grad()
 
@@ -154,8 +189,11 @@ class ScoreModule():
             print('{} Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\t{}'.format(mode, epoch, 
                         batch_idx * batch_size, len(dataloader.dataset), 100. * batch_idx * 
                         batch_size / len(dataloader.dataset), loss_total.data, args.tag))
-        data = (total_all_loss.data/batch_idx,)
-        utils.add_log_epoch(logger, data, epoch, mode=mode, method="score")
+        if batch_count == 0:
+            raise RuntimeError("No batches were processed in ScoreModule.train_val")
+        data = (total_all_loss.data / batch_count,)
+        epoch_metrics = utils.add_log_epoch(logger, data, epoch, mode=mode, method="score")
+        utils.save_epoch_metrics_json(self.json_metrics_path, epoch, mode, "score", epoch_metrics)
         
         if mode == 'train':
             scheduler_score.step()
@@ -200,6 +238,7 @@ class RegionModule():
         self.gripper_params = gripper_params
         
         self.saved_base_path = os.path.join(args.model_path, args.tag)
+        self.json_metrics_path = os.path.join(args.log_path, args.tag, 'epoch_metrics.json')
 
     def train_val(self, epoch, mode='train', use_log=True):
         if mode == 'train':
@@ -222,9 +261,11 @@ class RegionModule():
             batch_size = 1
 
         pre_loss1, pre_loss2, pre_loss3, pre_loss4 = 0, 0, 0, 0
+        batch_count = 0
         record_stage2 = (0, 0, 0, 0)
 
         for batch_idx, (pc, pc_score, pc_label, data_path, data_width) in enumerate(dataloader):
+            batch_count += 1
             if mode == 'train':
                 optimizer_score.zero_grad()
                 optimizer_region.zero_grad()
@@ -265,13 +306,16 @@ class RegionModule():
                         epoch, batch_idx * batch_size, len(dataloader.dataset),
                         100. * batch_idx * batch_size / len(dataloader.dataset), loss_total.data, args.tag))
         
-        data = (pre_loss1.data/batch_idx, pre_loss2.data/batch_idx,
-                    pre_loss3.data/batch_idx, pre_loss4.data/batch_idx)
-        utils.add_log_epoch(logger, data, epoch, mode=mode, method="region")
+        if batch_count == 0:
+            raise RuntimeError("No batches were processed in RegionModule.train_val")
+        data = (pre_loss1.data / batch_count, pre_loss2.data / batch_count,
+                    pre_loss3.data / batch_count, pre_loss4.data / batch_count)
+        epoch_metrics = utils.add_log_epoch(logger, data, epoch, mode=mode, method="region")
         if use_log:
             records = [record_stage2]
             stages  = ['stage2']
-            utils.add_eval_log_epoch(logger, records, len(dataloader.dataset), epoch, mode, stages)
+            epoch_metrics.update(utils.add_eval_log_epoch(logger, records, len(dataloader.dataset), epoch, mode, stages))
+        utils.save_epoch_metrics_json(self.json_metrics_path, epoch, mode, "region", epoch_metrics)
         if mode == 'train':
             scheduler_score.step()
             scheduler_region.step()
@@ -317,6 +361,7 @@ class RefineModule():
         self.gripper_params = gripper_params
         
         self.saved_base_path = os.path.join(args.model_path, args.tag)
+        self.json_metrics_path = os.path.join(args.log_path, args.tag, 'epoch_metrics.json')
 
     def train_val(self, epoch, mode='train', use_log=True):
         if mode == 'train':
@@ -337,6 +382,7 @@ class RefineModule():
             batch_size = 1
 
         pre_loss1_stage2, pre_loss2_stage2, pre_loss3_stage2, pre_loss4_stage2 = 0, 0, 0, 0
+        batch_count = 0
         pre_loss1_stage3_class, pre_loss2_stage3_class, pre_loss3_stage3_class, pre_loss4_stage3_class = 0, 0, 0, 0
         pre_loss1_stage3_class_satge2, pre_loss2_stage3_class_satge2, pre_loss3_stage3_class_satge2, \
                                                             pre_loss4_stage3_class_satge2 = 0, 0, 0, 0
@@ -345,6 +391,7 @@ class RefineModule():
         record_stage2, record_stage3, record_stage3_stage2, record_stage3_score = (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)
         
         for batch_idx, (pc, pc_score, pc_label, data_path, data_width) in enumerate(dataloader):
+            batch_count += 1
             if mode == 'train':
                 optimizer_score.zero_grad()
                 optimizer_region.zero_grad()
@@ -427,22 +474,26 @@ class RefineModule():
                 print('{} Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\t{}'.format(mode,
                             epoch, batch_idx * batch_size, len(dataloader.dataset),
                             100. * batch_idx * batch_size / len(dataloader.dataset), (loss_total).item(), args.tag))
-            except:
-                loss_total = loss.sum() 
-                if mode == 'train':
-                    loss_total.backward()
-                    optimizer_score.step()
-                    optimizer_region.step()
+            except Exception as exc:
+                sample_path = data_path[0] if len(data_path) > 0 else 'unknown'
+                raise RuntimeError(
+                    "RefineModule.train_val failed in mode='{}' at batch {} for sample {}".format(
+                        mode, batch_idx, sample_path
+                    )
+                ) from exc
 
-        data = (pre_loss1_stage2/batch_idx, pre_loss2_stage2/batch_idx, pre_loss3_stage2/batch_idx, pre_loss4_stage2/batch_idx, \
-                pre_loss1_stage3_class_satge2/batch_idx, pre_loss2_stage3_class_satge2/batch_idx, pre_loss3_stage3_class_satge2/batch_idx, pre_loss4_stage3_class_satge2/batch_idx, \
-                pre_loss1_stage3_class/batch_idx, pre_loss2_stage3_class/batch_idx, pre_loss3_stage3_class/batch_idx, pre_loss4_stage3_class/batch_idx, \
-                pre_loss1_stage3_score/batch_idx, pre_loss2_stage3_score/batch_idx, pre_loss3_stage3_score/batch_idx, pre_loss4_stage3_score/batch_idx)
-        utils.add_log_epoch(logger, data, epoch, mode=mode, method="refine")
+        if batch_count == 0:
+            raise RuntimeError("No batches were processed in RefineModule.train_val")
+        data = (pre_loss1_stage2 / batch_count, pre_loss2_stage2 / batch_count, pre_loss3_stage2 / batch_count, pre_loss4_stage2 / batch_count, \
+                pre_loss1_stage3_class_satge2 / batch_count, pre_loss2_stage3_class_satge2 / batch_count, pre_loss3_stage3_class_satge2 / batch_count, pre_loss4_stage3_class_satge2 / batch_count, \
+                pre_loss1_stage3_class / batch_count, pre_loss2_stage3_class / batch_count, pre_loss3_stage3_class / batch_count, pre_loss4_stage3_class / batch_count, \
+                pre_loss1_stage3_score / batch_count, pre_loss2_stage3_score / batch_count, pre_loss3_stage3_score / batch_count, pre_loss4_stage3_score / batch_count)
+        epoch_metrics = utils.add_log_epoch(logger, data, epoch, mode=mode, method="refine")
         if use_log:
             records = [record_stage2, record_stage3, record_stage3_stage2, record_stage3_score]
             stages  = ['stage2', 'stage3_class', 'stage3_class_stage2','stage3_score']
-            utils.add_eval_log_epoch(logger, records, len(dataloader.dataset), epoch, mode, stages)
+            epoch_metrics.update(utils.add_eval_log_epoch(logger, records, len(dataloader.dataset), epoch, mode, stages))
+        utils.save_epoch_metrics_json(self.json_metrics_path, epoch, mode, "refine", epoch_metrics)
 
         if mode == 'train':
             scheduler_score.step()

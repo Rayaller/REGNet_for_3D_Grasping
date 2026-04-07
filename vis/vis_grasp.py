@@ -1,9 +1,29 @@
+import argparse
+import os
 import numpy as np
-import open3d, os
+import open3d
 import torch
 from visualization_utils import get_hand_geometry
-import transforms3d
 torch.set_printoptions(precision=8)
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_PATH = "test_file/virtual_data_predict/00001_view_1.p"
+DEFAULT_STAGE = 'grasp_stage2'
+DEFAULT_SCORE_THRE = 0.5
+
+parser = argparse.ArgumentParser(description='Open3D grasp visualization')
+parser.add_argument('--path', type=str, default=DEFAULT_PATH)
+parser.add_argument('--stage', type=str, default=DEFAULT_STAGE,
+                    choices=['grasp_stage2', 'grasp_stage3_stage2', 'grasp_stage3', 'grasp_stage3_score'])
+parser.add_argument('--score-thre', type=float, default=DEFAULT_SCORE_THRE)
+
+def resolve_input_path(path: str):
+    if os.path.isabs(path):
+        return path
+    project_candidate = os.path.join(PROJECT_ROOT, path)
+    if os.path.exists(project_candidate):
+        return project_candidate
+    return os.path.abspath(path)
 
 def inv_transform_grasp(grasp_trans):
     '''
@@ -85,7 +105,8 @@ def draw_one_grasp(grasp, color_list=[0, 0.5, 0]):
     return hand
 
 def show_grasp(path, stage: str, score_thre: float):
-    data = np.load(os.path.abspath(path), allow_pickle=True)
+    path = resolve_input_path(path)
+    data = np.load(path, allow_pickle=True)
     view = data['points']
     color = data['colors']
     view_point_cloud = open3d.geometry.PointCloud()
@@ -100,26 +121,25 @@ def show_grasp(path, stage: str, score_thre: float):
     score_max, score_max_idx = 0, 0
     show_idxs = []
     for idx in range(len(grasp)):
-        if score[idx] < 0.55:
+        if score[idx] < score_thre:
             continue
         show_idxs.append(idx)
         if score_max < score[idx]:
             score_max = score[idx]
             score_max_idx = idx
 
-    show_idxs.remove(score_max_idx)
+    if score_max_idx in show_idxs:
+        show_idxs.remove(score_max_idx)
     for idx in show_idxs:
         i = grasp[idx]
         hand = draw_one_grasp(i)
         vis_list.extend(hand)
-    hand = draw_one_grasp(grasp[score_max_idx], color_list=[0.5, 0, 0])
-    vis_list.extend(hand)
+    if len(grasp) > 0:
+        hand = draw_one_grasp(grasp[score_max_idx], color_list=[0.5, 0, 0])
+        vis_list.extend(hand)
 
     open3d.visualization.draw_geometries(vis_list)
 
 if __name__ == '__main__':
-    path = "test_file/virtual_data_predict/00001_view_1.p"
-    stage = 'grasp_stage2'
-    score_thre = 0.5
-    show_grasp(path, stage, score_thre)
-    
+    args = parser.parse_args()
+    show_grasp(args.path, args.stage, args.score_thre)

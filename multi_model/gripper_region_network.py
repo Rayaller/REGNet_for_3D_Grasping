@@ -62,9 +62,9 @@ class GripperRegionNetwork(nn.Module):
             gmask = torch.nonzero(ground.view(-1,ground.shape[2])[:,-1] != -1).view(-1)
             print(BmulN_C, "centers has", len(gmask), "grasps" )              
         else:
-            gmask = torch.arange(0, BmulN_C)
-        if first_grasp.cuda:
-            gmask = gmask.cuda()
+            gmask = torch.arange(0, BmulN_C, device=first_grasp.device)
+        if first_grasp.is_cuda:
+            gmask = gmask.to(first_grasp.device)
 
         anchors = anchors[gmask, :, :]
         ##### tt: [num_anchor*len(true_mask), 7]   the anchor grasps
@@ -160,16 +160,16 @@ class GripperRegionNetwork(nn.Module):
             loss_first4_gt  = F.smooth_l1_loss(first_grasp_gt[:,7:],   ground_score_gt, reduction='mean')
             print("regress loss of stage2", loss_first1_gt.data, loss_first2_gt.data, loss_first3_gt.data, loss_first4_gt.data)
 
-            tensor_y_gt = torch.ones(len(iou_nonzero), 1)
+            tensor_y_gt = torch.ones(len(iou_nonzero), device=first_grasp_r_gt.device)
             loss_center_gt  = F.smooth_l1_loss  (first_grasp_center_gt, ground_gt[:,:3], reduction='mean').data
-            loss_cos_r_gt   = self.criterion_cos(first_grasp_r_gt, ground_gt[:,3:6], tensor_y_gt.cuda()).data
+            loss_cos_r_gt   = self.criterion_cos(first_grasp_r_gt, ground_gt[:,3:6], tensor_y_gt).data
             loss_theta_gt   = F.smooth_l1_loss  (first_grasp_angle_gt, ground_gt[:,6:7], reduction='mean').data
             loss_score_gt   = loss_first4_gt.data
             print("under gt class loss", loss_center_gt, loss_cos_r_gt, loss_theta_gt, loss_score_gt)
 
-            tensor_y_pre = torch.ones(len(final_mask), 1)
+            tensor_y_pre = torch.ones(len(final_mask), device=first_grasp_r_pre.device)
             loss_center_pre = F.smooth_l1_loss  ( first_grasp_center_pre, ground_gt[:,:3], reduction='mean').data
-            loss_cos_r_pre  = self.criterion_cos( first_grasp_r_pre, ground_gt[:,3:6], tensor_y_pre.cuda()).data
+            loss_cos_r_pre  = self.criterion_cos( first_grasp_r_pre, ground_gt[:,3:6], tensor_y_pre).data
             loss_theta_pre  = F.smooth_l1_loss  ( first_grasp_angle_pre, ground_gt[:,6:7], reduction='mean').data
             loss_score_pre  = F.smooth_l1_loss  ( first_grasp_score_pre, ground_score_gt, reduction='mean').data
             print("under pre class loss", loss_center_pre, loss_cos_r_pre, loss_theta_pre, loss_score_pre)
@@ -220,9 +220,7 @@ class GripperRegionNetwork(nn.Module):
         loss_refine_tuple, correct_refine_tuple = (None, None), (None, None, None, None)
 
         if next_gt is not None:
-            gt_class = torch.zeros((len(next_gt)))
-            if next_grasp.is_cuda:
-                gt_class = gt_class.cuda()
+            gt_class = torch.zeros((len(next_gt)), device=next_gt.device)
             
             center_dist = (next_grasp[:,:3] - next_gt[:,:3]) 
             center_dist_mask = (torch.sqrt(torch.mul(center_dist[:,0],center_dist[:,0])+torch.mul(center_dist[:,1],center_dist[:,1])\
@@ -269,28 +267,29 @@ class GripperRegionNetwork(nn.Module):
                 loss              = loss_class + loss_grasp_center + loss_grasp_r + loss_grasp_theta + loss_grasp_score
 
             if len(class_select) > 0:
-                tensor_y = torch.ones(len(class_select), 1)
-                if next_x_cls.is_cuda:
-                    tensor_y = tensor_y.cuda()
+                tensor_y = torch.ones(len(class_select), device=next_x_cls.device)
                 loss_center_pre        = F.smooth_l1_loss(select_grasp_class[:,:3], next_gt[class_select,:3], reduction='mean').data
-                loss_center_pre_score  = F.smooth_l1_loss(select_grasp_score[:,:3], next_gt[score_select,:3], reduction='mean').data
                 loss_center_pre_stage2 = F.smooth_l1_loss(select_grasp_class_stage2[:,:3], next_gt[class_select,:3], reduction='mean').data
 
                 loss_r_cos_pre        = self.criterion_cos(select_grasp_class[:,3:6], next_gt[class_select,3:6],tensor_y).data
-                loss_r_cos_pre_score  = self.criterion_cos(select_grasp_score[:,3:6], next_gt[score_select,3:6],tensor_y).data
                 loss_r_cos_pre_stage2 = self.criterion_cos(select_grasp_class_stage2[:,3:6], next_gt[class_select,3:6],tensor_y).data
 
                 loss_theta_pre        = F.smooth_l1_loss(select_grasp_class[:,6], next_gt[class_select,6], reduction='mean').data
-                loss_theta_pre_score  = F.smooth_l1_loss(select_grasp_score[:,6], next_gt[score_select,6], reduction='mean').data
                 loss_theta_pre_stage2 = F.smooth_l1_loss(select_grasp_class_stage2[:,6], next_gt[class_select,6], reduction='mean').data
 
                 loss_score_pre        = F.smooth_l1_loss(select_grasp_class[:,7:], next_gt[class_select,7:], reduction='mean').data
-                loss_score_pre_score  = F.smooth_l1_loss(select_grasp_score[:,7:], next_gt[score_select,7:], reduction='mean').data
                 loss_score_pre_stage2 = F.smooth_l1_loss(select_grasp_class_stage2[:,7:], next_gt[class_select,7:], reduction='mean').data
 
-                print("loss stage 2 - class: {:.4f}, {:.4f}, {:.4f}, {:.4f}".format(loss_center_pre_stage2, loss_r_cos_pre_stage2, loss_theta_pre_stage2, loss_score_pre_stage2))
-                print("loss stage 3 - class: {:.4f}, {:.4f}, {:.4f}, {:.4f}".format(loss_center_pre, loss_r_cos_pre, loss_theta_pre, loss_score_pre) )
-                print("loss stage 3 - score: {:.4f}, {:.4f}, {:.4f}, {:.4f}".format(loss_center_pre_score, loss_r_cos_pre_score, loss_theta_pre_score, loss_score_pre_score))
+            if len(score_select) > 0:
+                tensor_y_score = torch.ones(len(score_select), device=next_x_cls.device)
+                loss_center_pre_score = F.smooth_l1_loss(select_grasp_score[:,:3], next_gt[score_select,:3], reduction='mean').data
+                loss_r_cos_pre_score = self.criterion_cos(select_grasp_score[:,3:6], next_gt[score_select,3:6], tensor_y_score).data
+                loss_theta_pre_score = F.smooth_l1_loss(select_grasp_score[:,6], next_gt[score_select,6], reduction='mean').data
+                loss_score_pre_score = F.smooth_l1_loss(select_grasp_score[:,7:], next_gt[score_select,7:], reduction='mean').data
+
+            print("loss stage 2 - class: {:.4f}, {:.4f}, {:.4f}, {:.4f}".format(loss_center_pre_stage2, loss_r_cos_pre_stage2, loss_theta_pre_stage2, loss_score_pre_stage2))
+            print("loss stage 3 - class: {:.4f}, {:.4f}, {:.4f}, {:.4f}".format(loss_center_pre, loss_r_cos_pre, loss_theta_pre, loss_score_pre) )
+            print("loss stage 3 - score: {:.4f}, {:.4f}, {:.4f}, {:.4f}".format(loss_center_pre_score, loss_r_cos_pre_score, loss_theta_pre_score, loss_score_pre_score))
 
             TP = ((gt_class.view(-1) == 1 ) & (predit_formal.view(-1) == 1)).sum().float()
             TN = ((gt_class.view(-1) == 0 ) & (predit_formal.view(-1) == 0)).sum().float()
@@ -332,9 +331,7 @@ class GripperRegionNetwork(nn.Module):
 
         if len(gripper_mask) >= 2:
             all_feature_new = all_feature.contiguous().view(-1, feature_len)
-            add = torch.arange(B).view(-1,1).repeat(1, N_C).view(-1)[true_mask].view(-1,1).repeat(1, self.gripper_number)
-            if pc_group_more_index.cuda:
-                add = add.cuda()
+            add = torch.arange(B, device=true_mask.device).view(-1,1).repeat(1, N_C).view(-1)[true_mask].view(-1,1).repeat(1, self.gripper_number)
             #### gripper_pc_index_inall: [len(true_mask), region_num]
             gripper_pc_index_inall_new = (gripper_pc_index_inall.long() + add * all_feature.shape[1]).view(-1)
             gripper_feature = all_feature_new[gripper_pc_index_inall_new].view(-1, self.gripper_number, feature_len)[gripper_mask]#.detach()
@@ -376,7 +373,8 @@ class GripperRegionNetwork(nn.Module):
         _,_,N_G_M,_ = pc_group_more.shape
         
         cuda = pc.is_cuda
-        final_grasp, final_grasp_stage1 = torch.Tensor(), torch.Tensor()
+        final_grasp = torch.empty(0, device=pc.device)
+        final_grasp_stage1 = torch.empty(0, device=pc.device)
         loss_tuple, loss_tuple_stage2 = (None, None), (None, None)
 
         anchors = self._enumerate_anchors(center_pc[:,:,:3].view(-1,3).float())  ## [B*center_num, 8, 7]
@@ -387,9 +385,7 @@ class GripperRegionNetwork(nn.Module):
         
         feature_len = all_feature.shape[2]
         all_feature_new = all_feature.contiguous().view(-1, feature_len)
-        add = torch.arange(B).view(-1,1).repeat(1, N_C*N_G)
-        if pc_group_index.is_cuda:
-            add = add.cuda()
+        add = torch.arange(B, device=pc_group_index.device).view(-1,1).repeat(1, N_C*N_G)
         pc_group_index_new = (pc_group_index.long().view(B, N_C*N_G) + add * all_feature.shape[1]).view(-1)
         center_feature = all_feature_new[pc_group_index_new].view(B, N_C, N_G, feature_len)
         center_feature = center_feature.view(-1, N_G, feature_len)#[true_mask]#.detach()
@@ -457,9 +453,8 @@ def get_gripper_region_transform(group_points, group_index, grasp, region_num, g
     # for i in range(B):
     #     r = torch.tensor([[cos_t[i], 0, -sin_t[i]],[0, 1, 0],[sin_t[i], 0, cos_t[i]]]).view(1,3,3)
     #     R1[i,:,:] = r
-    one, zero = torch.ones((B, 1), dtype=torch.float32), torch.zeros((B, 1), dtype=torch.float32)
-    if cuda:
-        one, zero = one.cuda(), zero.cuda()
+    one = torch.ones((B, 1), dtype=torch.float32, device=center.device)
+    zero = torch.zeros((B, 1), dtype=torch.float32, device=center.device)
     R1 = torch.cat( (cos_t.view(B,1), zero, -sin_t.view(B,1), zero, one, zero, sin_t.view(B,1), 
                         zero, cos_t.view(B,1)), dim=1).view(B,3,3)
     if cuda:
